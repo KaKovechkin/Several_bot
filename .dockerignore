@@ -1,0 +1,23 @@
+# Secrets — must never end up in image layers
+.env
+.env.*
+!.env.example
+
+# Local data / runtime artifacts
+messages.db
+data/
+media/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# VCS & dev tooling
+.git/
+.gitignore
+.dockerignore
+
+# Docs not needed at runtime
+DEPLOY.md

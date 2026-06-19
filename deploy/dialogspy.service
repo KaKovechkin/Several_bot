@@ -1,0 +1,16 @@
+[Unit]
+Description=DialogSpy Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dialogspy
+WorkingDirectory=/opt/dialogspy
+EnvironmentFile=/opt/dialogspy/.env
+ExecStart=/opt/dialogspy/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+aiogram==3.28.2
+aiosqlite==0.22.1
+python-dotenv==1.2.2
+aiohttp==3.13.5  # used by the optional HEALTHCHECK_URL heartbeat (also an aiogram dep)
