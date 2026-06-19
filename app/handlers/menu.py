@@ -252,7 +252,7 @@ async def cb_lang(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == 'set:keywords')
-async def cb_keywords(callback: CallbackQuery, fsm: FSMContext):
+async def cb_keywords(callback: CallbackQuery, state: FSMContext):
     owner_id = callback.from_user.id
     if not await is_premium(owner_id):
         lang = await get_language(owner_id)
@@ -265,12 +265,12 @@ async def cb_keywords(callback: CallbackQuery, fsm: FSMContext):
         f'🔑 Текущие ключевые слова: {current}\n\n'
         f'Отправь слово чтобы добавить (или «-слово» чтобы удалить).'
     )
-    await fsm.set_state(Flow.add_keyword)
+    await state.set_state(Flow.add_keyword)
     await callback.answer()
 
 
 @router.message(Flow.add_keyword)
-async def on_keyword_input(message: Message, fsm: FSMContext):
+async def on_keyword_input(message: Message, state: FSMContext):
     owner_id = message.from_user.id
     word = (message.text or '').strip()
     if word.startswith('-'):
@@ -279,7 +279,7 @@ async def on_keyword_input(message: Message, fsm: FSMContext):
     else:
         await add_keyword(owner_id, word)
         await message.answer(f'➕ Добавлено: {word.lower()}')
-    await fsm.clear()
+    await state.clear()
 
 
 # --------------------------- clear chat / wipe DB ---------------------------
