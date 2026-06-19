@@ -1,0 +1,15 @@
+meta:
+  environment: docker
+  toolchain: docker
+build:
+  dockerfile: Dockerfile
+  skip: false
+run:
+  # Постоянное хранилище Amvera монтируется сюда — тут переживают пересборку
+  # messages.db и папка media. Бот пишет туда, потому что в «Переменных
+  # окружения» проекта заданы:
+  #   DB_PATH=/data/messages.db
+  #   MEDIA_DIR=/data/media
+  # а также секреты: TG_TOKEN, ADMIN_IDS, ADMIN_PASSWORD, SUPPORT_USERNAME.
+  # containerPort не указываем: бот работает через long polling и не слушает порт.
+  persistenceMount: /data
