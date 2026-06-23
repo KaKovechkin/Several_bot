@@ -18,7 +18,7 @@ from aiogram.types import Message
 from app.logger import logger
 from app.database.db import (
     upsert_subscription, deactivate_subscription, get_subscription,
-    grant_referral_bonus, reset_trial, format_date,
+    grant_referral_bonus, reset_trial, format_date, get_all_owners,
 )
 
 router = Router()
@@ -84,6 +84,7 @@ async def cmd_admin_help(message: Message):
         '/reset_trial &lt;user_id&gt; — сбросить пробный период\n'
         '/admin_status &lt;user_id&gt; — статус подписки\n'
         '/grant_ref_bonus &lt;referrer_id&gt; &lt;referred_id&gt; — начислить реф-бонус\n'
+        '/admin_stats — список всех пользователей с бизнес-подключением\n'
         '/admin_logout — выйти',
         parse_mode='HTML',
     )
@@ -205,6 +206,36 @@ async def cmd_grant_ref_bonus(message: Message, command: CommandObject):
         f'✅ Реферу {referrer_id} начислено {bonus_days} дн. '
         f'(до {format_date(new_exp)}).'
     )
+
+
+@router.message(Command('admin_stats'))
+async def cmd_admin_stats(message: Message):
+    if message.from_user.id not in admin_sessions:
+        return
+    owners = await get_all_owners()
+    total = len(owners)
+    if total == 0:
+        await message.answer('📊 Пользователей с бизнес-подключением: 0')
+        return
+
+    lines = [f'📊 <b>Пользователи бота</b> — всего: {total}\n']
+    for owner_id, username, first_name in owners:
+        name_part = f'@{username}' if username else (first_name or '—')
+        lines.append(f'• <code>{owner_id}</code> {name_part}')
+
+    # Telegram limit is 4096 chars; split if needed.
+    chunk, chunks = '', []
+    for line in lines:
+        if len(chunk) + len(line) + 1 > 4000:
+            chunks.append(chunk)
+            chunk = line
+        else:
+            chunk = (chunk + '\n' + line) if chunk else line
+    if chunk:
+        chunks.append(chunk)
+
+    for part in chunks:
+        await message.answer(part, parse_mode='HTML')
 
 
 @router.message(Command('admin_logout'))

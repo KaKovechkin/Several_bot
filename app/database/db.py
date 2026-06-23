@@ -591,6 +591,23 @@ async def grant_referral_bonus(referrer_id, referred_id, bonus_days=7):
     return new_expires
 
 
+async def get_all_owners():
+    """Return all business connection owners with best-effort username lookup."""
+    cursor = await db_connection.execute('''
+        SELECT
+            c.owner_id,
+            (SELECT m.username FROM messages m
+             WHERE CAST(m.from_user_id AS TEXT) = c.owner_id AND m.username IS NOT NULL
+             LIMIT 1) AS username,
+            (SELECT m.first_name FROM messages m
+             WHERE CAST(m.from_user_id AS TEXT) = c.owner_id AND m.first_name IS NOT NULL
+             LIMIT 1) AS first_name
+        FROM connections c
+        ORDER BY c.owner_id
+    ''')
+    return await cursor.fetchall()
+
+
 async def delete_message_by_id(db_id):
     """Delete a single stored message (and its edit history) by messages.id.
 
