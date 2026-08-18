@@ -1,20 +1,23 @@
 from datetime import datetime, timezone
 
+import aiosqlite
+import os
+
 from aiogram.types import (
     Message, BusinessMessagesDeleted, BusinessConnection,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from aiogram import Router, Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
-import aiosqlite
 
 from app.logger import logger
 from app.subscription import is_premium
 from app.media import download_media, send_media
+from app.delivery import send_message_retry
 from app.database.db import (
     save_message, message_update, mark_deleted, get_message, save_connection,
     ensure_settings, get_settings, get_keywords, queue_notification,
-    enforce_user_limit, format_date, get_owner_by_connection,
+    enforce_user_limit, format_date, get_owner_by_connection, upsert_owner, MSK,
 )
 
 router = Router()
@@ -35,6 +38,7 @@ async def _resolve_owner(bot: Bot, bcid: str):
             conn = await bot.get_business_connection(bcid)
             owner_id = conn.user.id
             await save_connection(owner_id, bcid)
+            await upsert_owner(owner_id, conn.user.username, conn.user.first_name)
         except Exception as e:
             logger.warning(f'Could not resolve owner for {bcid}: {e}')
             return None
@@ -56,7 +60,7 @@ def _in_quiet(settings: dict) -> bool:
         return False
     start = settings.get('quiet_start', 23)
     end = settings.get('quiet_end', 8)
-    hour = datetime.now(tz=timezone.utc).hour
+    hour = datetime.now(tz=MSK).hour
     if start <= end:
         return start <= hour < end
     return hour >= start or hour < end
@@ -92,7 +96,7 @@ async def _deliver_text(bot: Bot, owner_id, settings, brief: str, full: str):
         await queue_notification(owner_id, text)
         return
     try:
-        await bot.send_message(chat_id=owner_id, text=text, reply_markup=markup)
+        await send_message_retry(bot, owner_id, text, reply_markup=markup)
     except TelegramBadRequest as e:
         logger.warning(f'TG error delivering to {owner_id}: {e}')
 
@@ -111,7 +115,7 @@ async def _deliver(bot: Bot, owner_id, settings, premium, type_message,
         await send_media(bot, owner_id, type_message, local_path, file_id, full)
     except TelegramBadRequest as e:
         logger.warning(f'TG error sending media to {owner_id}: {e}')
-        await bot.send_message(owner_id, text=f'{full}\n(медиа недоступно)')
+        await send_message_retry(bot, owner_id, f'{full}\n(медиа недоступно)')
 
 
 @router.business_connection()
@@ -120,6 +124,7 @@ async def handle_business_connection(connection: BusinessConnection, bot: Bot):
     try:
         owner_id = connection.user.id
         await ensure_settings(owner_id)
+        await upsert_owner(owner_id, connection.user.username, connection.user.first_name)
         if connection.is_enabled:
             await save_connection(owner_id, connection.id)
             logger.info(f'Business connection enabled for owner {owner_id}')
@@ -174,10 +179,17 @@ async def handle_business_message(message: Message, bot: Bot):
             message.chat.id, message.business_connection_id, message.message_id,
             file_id, type_message, message.from_user.id, text, _to_ts(message.date),
             message.from_user.first_name, message.from_user.username, local_path,
+            owner_id=owner_id,
         )
-        await enforce_user_limit(
-            message.business_connection_id, message.from_user.id, USER_MSG_LIMIT
+        dropped_paths = await enforce_user_limit(
+            owner_id, message.from_user.id, USER_MSG_LIMIT
         )
+        for p in dropped_paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except OSError as e:
+                logger.warning(f'Failed to remove media file {p}: {e}')
     except aiosqlite.Error as e:
         logger.error(f'DB error saving business message: {e}')
     except Exception as e:
@@ -193,6 +205,7 @@ async def handle_business_message_update(message: Message, bot: Bot):
         _owner_cache[message.business_connection_id] = owner_id
         settings = await ensure_settings(owner_id)
         await save_connection(owner_id, message.business_connection_id)
+        await upsert_owner(owner_id, connection.user.username, connection.user.first_name)
 
         # Don't notify the owner about edits to their own messages.
         if message.from_user and message.from_user.id == owner_id:
@@ -248,6 +261,7 @@ async def handle_deleted(event: BusinessMessagesDeleted, bot: Bot):
         _owner_cache[event.business_connection_id] = owner_id
         settings = await ensure_settings(owner_id)
         await save_connection(owner_id, event.business_connection_id)
+        await upsert_owner(owner_id, connection.user.username, connection.user.first_name)
     except Exception as e:
         logger.exception(f'Error resolving connection on delete: {e}')
         return

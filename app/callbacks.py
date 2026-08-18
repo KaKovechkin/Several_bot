@@ -11,3 +11,7 @@ class PlanCallback(CallbackData, prefix='plan'):
 
 class DeleteMsg(CallbackData, prefix='del'):
     db_id: int  # messages.id of the stored record to delete
+
+
+class PayCheck(CallbackData, prefix='pay'):
+    payment_id: str  # YooKassa payment id

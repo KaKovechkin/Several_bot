@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 
 from app.database.db import get_subscription
 
-# Pricing (Telegram Stars) — used for display only
-PREMIUM_MONTH_STARS = 120
-PREMIUM_YEAR_STARS = 600
+# Pricing (YooKassa) — used for display only; real value lives in app/payments.py
+PREMIUM_PRICE_RUB = 500
+PREMIUM_PERIOD_DAYS = 365
 
 # Free tier limits
 FREE_HISTORY_DAYS = 7

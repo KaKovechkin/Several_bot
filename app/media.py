@@ -6,6 +6,7 @@ from aiogram.types import FSInputFile
 from aiogram.exceptions import TelegramBadRequest
 
 from app.logger import logger
+from app.delivery import send_message_retry
 
 MEDIA_DIR = os.getenv('MEDIA_DIR', 'media')
 
@@ -94,6 +95,6 @@ async def send_media(bot: Bot, chat_id: int, type_message: str,
 
     if media_failed:
         info = f'{info}\n⚠️ Медиа не удалось восстановить.'
-    info_msg = await bot.send_message(chat_id, info, reply_markup=reply_markup)
+    info_msg = await send_message_retry(bot, chat_id, info, reply_markup=reply_markup)
     ids.append(info_msg.message_id)
     return ids

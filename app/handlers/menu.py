@@ -28,7 +28,7 @@ from app.database.db import (
     get_connection, ensure_settings, get_settings, get_language, update_setting,
     add_keyword, remove_keyword, get_keywords,
     get_top_deleters, get_top_editors, get_deletion_hours,
-    delete_all_messages, add_referral, upsert_subscription,
+    delete_all_messages, add_referral, upsert_owner,
 )
 from app.handlers.history import send_contact_list
 
@@ -37,6 +37,7 @@ router = Router()
 
 class Flow(StatesGroup):
     add_keyword = State()
+    quiet_hours = State()
 
 
 def _name(message: Message) -> str:
@@ -47,6 +48,7 @@ def _name(message: Message) -> str:
 async def cmd_start(message: Message, command: CommandObject):
     owner_id = message.from_user.id
     await ensure_settings(owner_id)
+    await upsert_owner(owner_id, message.from_user.username, message.from_user.first_name)
     # Referral deep-link: /start ref_<referrer_id>
     arg = (command.args or '').strip()
     if arg.startswith('ref_'):
@@ -160,10 +162,9 @@ async def menu_stats(message: Message):
     if conn is None:
         await message.answer(t(lang, 'no_connection'))
         return
-    bcid = conn[0]
-    deleters = await get_top_deleters(bcid)
-    editors = await get_top_editors(bcid)
-    hours = await get_deletion_hours(bcid)
+    deleters = await get_top_deleters(owner_id)
+    editors = await get_top_editors(owner_id)
+    hours = await get_deletion_hours(owner_id)
 
     def fmt(rows):
         if not rows:
@@ -201,24 +202,6 @@ async def menu_subscription(message: Message, bot: Bot):
         )
 
 
-@router.callback_query(F.data == 'buy_premium')
-async def cb_buy(callback: CallbackQuery, bot: Bot):
-    # Тестовый режим: приём оплаты не подключён, поэтому «покупка»
-    # активирует Premium бесплатно.
-    owner_id = callback.from_user.id
-    lang = await get_language(owner_id)
-    await ensure_settings(owner_id)
-    # Записываем в таблицу subscriptions (единый источник правды), чтобы premium
-    # можно было сбросить через /revoke. expires_at=None — бессрочно на время теста.
-    await upsert_subscription(owner_id, 1, None, 'test', None, 0)
-    me = await bot.get_me()
-    await callback.message.answer(
-        t(lang, 'sub_activated'), parse_mode='HTML',
-        reply_markup=share_kb(lang, me.username),
-    )
-    await callback.answer('Premium активирован 🎉')
-
-
 # --------------------------- settings ---------------------------
 
 @router.message(F.text.startswith('⚙️'))
@@ -233,9 +216,46 @@ async def cb_quiet(callback: CallbackQuery):
     settings = await ensure_settings(owner_id)
     new_val = 0 if settings.get('quiet_enabled') else 1
     await update_setting(owner_id, 'quiet_enabled', new_val)
-    state = 'включён (23:00–08:00)' if new_val else 'выключен'
+    start = settings.get('quiet_start', 23)
+    end = settings.get('quiet_end', 8)
+    state = f'включён ({start}:00–{end}:00 МСК)' if new_val else 'выключен'
     await callback.message.answer(f'🔕 Тихий режим {state}.')
     await callback.answer()
+
+
+@router.callback_query(F.data == 'set:qhours')
+async def cb_qhours(callback: CallbackQuery, state: FSMContext):
+    owner_id = callback.from_user.id
+    settings = await ensure_settings(owner_id)
+    start = settings.get('quiet_start', 23)
+    end = settings.get('quiet_end', 8)
+    await callback.message.answer(
+        f'🕐 Сейчас тихий режим: {start}:00–{end}:00 (МСК).\n'
+        f'Отправь два числа через пробел: `начало конец` (например `23 8`).'
+    )
+    await state.set_state(Flow.quiet_hours)
+    await callback.answer()
+
+
+@router.message(Flow.quiet_hours)
+async def on_quiet_hours(message: Message, state: FSMContext):
+    owner_id = message.from_user.id
+    parts = (message.text or '').split()
+    if len(parts) != 2:
+        await message.answer('Отправь два числа: `начало конец` (0–23), например `23 8`.')
+        return
+    try:
+        start = int(parts[0])
+        end = int(parts[1])
+        if not (0 <= start <= 23 and 0 <= end <= 23):
+            raise ValueError
+    except ValueError:
+        await message.answer('Часы должны быть целыми числами от 0 до 23.')
+        return
+    await update_setting(owner_id, 'quiet_start', start)
+    await update_setting(owner_id, 'quiet_end', end)
+    await message.answer(f'🕐 Тихий режим теперь: {start}:00–{end}:00 (МСК).')
+    await state.clear()
 
 
 @router.callback_query(F.data == 'set:lang')

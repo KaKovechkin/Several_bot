@@ -77,17 +77,17 @@ TEXTS = {
         'btn_share': '📤 Поделиться с друзьями',
         'sub_test_offer': (
             '💎 <b>Sevrax Premium</b>\n\n'
-            '🎉 Хорошие новости: сейчас бот работает в <b>тестовом режиме</b>, '
-            'поэтому Premium включается <b>бесплатно</b> — оплату мы пока не принимаем.\n\n'
             'Что откроется:\n'
             '• Полное содержимое сообщений и медиа\n'
             '• История без ограничений\n'
             '• Умные алерты по ключевым словам\n'
-            '• Статистика, экспорт, транскрибация голосовых\n\n'
-            'Нажми кнопку ниже, чтобы активировать 👇'
+            '• Статистика\n\n'
+            'Тариф: <b>500 ₽ / год</b> (разово).\n'
+            'Новый пользователь может активировать пробный период на 7 дней бесплатно.\n\n'
+            'Нажми кнопку ниже, чтобы оформить 👇'
         ),
         'sub_active': (
-            '💎 <b>Premium активен</b> (тестовый режим).\n\n'
+            '💎 <b>Premium активен</b>.\n\n'
             'Спасибо что пользуешься Sevrax! 🙌\n'
             'Помоги нам расти — поделись ботом с друзьями:'
         ),
@@ -172,17 +172,17 @@ TEXTS = {
         'btn_share': '📤 Share with friends',
         'sub_test_offer': (
             '💎 <b>Sevrax Premium</b>\n\n'
-            '🎉 Good news: the bot is in <b>test mode</b>, so Premium is enabled '
-            'for <b>free</b> — we are not accepting payments yet.\n\n'
             'What you unlock:\n'
             '• Full message content and media\n'
             '• Unlimited history\n'
             '• Smart keyword alerts\n'
-            '• Statistics, export, voice transcription\n\n'
-            'Tap the button below to activate 👇'
+            '• Statistics\n\n'
+            'Price: <b>500 ₽ / year</b> (one-time).\n'
+            'New users can start a 7-day free trial.\n\n'
+            'Tap the button below to subscribe 👇'
         ),
         'sub_active': (
-            '💎 <b>Premium is active</b> (test mode).\n\n'
+            '💎 <b>Premium is active</b>.\n\n'
             'Thanks for using Sevrax! 🙌\n'
             'Help us grow — share the bot with friends:'
         ),

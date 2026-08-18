@@ -56,7 +56,9 @@ async def init_db():
     is_deleted INTEGER,
     first_name TEXT,
     username TEXT,
-    is_edited INTEGER DEFAULT 0
+    is_edited INTEGER DEFAULT 0,
+    owner_id INTEGER,
+    deleted_at INTEGER
     )""")
     await db_connection.execute("""CREATE TABLE IF NOT EXISTS connections (
         owner_id TEXT,
@@ -113,6 +115,20 @@ async def init_db():
         bonus_granted INTEGER DEFAULT 0,
         UNIQUE(referred_id)
         )""")
+    await db_connection.execute("""CREATE TABLE IF NOT EXISTS owners (
+        owner_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        connected_at INTEGER,
+        last_seen INTEGER
+        )""")
+    await db_connection.execute("""CREATE TABLE IF NOT EXISTS yoo_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        payment_id TEXT UNIQUE,
+        user_id INTEGER,
+        status TEXT,
+        created_at INTEGER
+        )""")
     # Indexes for frequently queried fields
     await db_connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id)"
@@ -126,11 +142,26 @@ async def init_db():
     await db_connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_biz_conn ON messages (business_connection_id)"
     )
+    await db_connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_owner_id ON messages (owner_id)"
+    )
     # Migration: add local_path column for downloaded media if missing.
     cursor = await db_connection.execute("PRAGMA table_info(messages)")
     cols = [r[1] for r in await cursor.fetchall()]
     if 'local_path' not in cols:
         await db_connection.execute("ALTER TABLE messages ADD COLUMN local_path TEXT")
+    if 'owner_id' not in cols:
+        await db_connection.execute("ALTER TABLE messages ADD COLUMN owner_id INTEGER")
+        # Backfill owner_id from the connections map so pre-existing messages
+        # remain visible in history after the switch to owner_id-based queries.
+        await db_connection.execute('''
+            UPDATE messages SET owner_id = (
+                SELECT CAST(c.owner_id AS INTEGER) FROM connections c
+                WHERE c.business_connection_id = messages.business_connection_id
+            ) WHERE owner_id IS NULL AND business_connection_id IS NOT NULL
+        ''')
+    if 'deleted_at' not in cols:
+        await db_connection.execute("ALTER TABLE messages ADD COLUMN deleted_at INTEGER")
     # Migration: add trial_used to subscriptions if an older table exists without it.
     cursor = await db_connection.execute("PRAGMA table_info(subscriptions)")
     sub_cols = [r[1] for r in await cursor.fetchall()]
@@ -144,18 +175,19 @@ async def close_db():
     await db_connection.close()
 
 
-async def save_message(chat_id, business_connection_id, message_id, file_id, type_message, from_user_id, text, date, first_name, username, local_path=None):
+async def save_message(chat_id, business_connection_id, message_id, file_id, type_message, from_user_id, text, date, first_name, username, local_path=None, owner_id=None):
     await db_connection.execute('''
-        INSERT INTO messages (chat_id, business_connection_id, message_id, file_id, type_message, from_user_id, text, date, first_name, username, is_deleted, local_path)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (chat_id, business_connection_id, message_id, file_id, type_message, from_user_id, text, date, first_name, username, 0, local_path))
+        INSERT INTO messages (chat_id, business_connection_id, message_id, file_id, type_message, from_user_id, text, date, first_name, username, is_deleted, local_path, owner_id)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (chat_id, business_connection_id, message_id, file_id, type_message, from_user_id, text, date, first_name, username, 0, local_path, owner_id))
     await db_connection.commit()
 
 
 async def mark_deleted(message_id, chat_id):
+    now = int(datetime.now(tz=timezone.utc).timestamp())
     await db_connection.execute('''
-        UPDATE messages SET is_deleted = 1 WHERE chat_id = ? AND message_id = ?
-    ''', (chat_id, message_id))
+        UPDATE messages SET is_deleted = 1, deleted_at = ? WHERE chat_id = ? AND message_id = ?
+    ''', (now, chat_id, message_id))
     await db_connection.commit()
 
 
@@ -223,6 +255,47 @@ async def get_owner_by_connection(business_connection_id):
     return int(row[0]) if row and row[0] is not None else None
 
 
+# ----------------------------- owners (profiles) -----------------------------
+
+async def upsert_owner(owner_id, username=None, first_name=None):
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    await db_connection.execute('''
+        INSERT INTO owners (owner_id, username, first_name, connected_at, last_seen)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(owner_id) DO UPDATE SET
+            username = COALESCE(NULLIF(excluded.username, ''), owners.username),
+            first_name = COALESCE(NULLIF(excluded.first_name, ''), owners.first_name),
+            last_seen = excluded.last_seen
+    ''', (int(owner_id), username, first_name, now, now))
+    await db_connection.commit()
+
+
+async def find_owner_by_username(username):
+    if not username:
+        return None
+    u = username.lower().lstrip('@')
+    cursor = await db_connection.execute(
+        'SELECT owner_id FROM owners WHERE LOWER(username) = ?', (u,)
+    )
+    row = await cursor.fetchone()
+    return int(row[0]) if row else None
+
+
+async def get_owner_profile(owner_id):
+    cursor = await db_connection.execute(
+        'SELECT owner_id, username, first_name FROM owners WHERE owner_id = ?',
+        (int(owner_id),)
+    )
+    return await cursor.fetchone()
+
+
+async def get_connections_map():
+    cursor = await db_connection.execute(
+        'SELECT owner_id, business_connection_id FROM connections'
+    )
+    return {int(r[0]): r[1] for r in await cursor.fetchall() if r[0] is not None}
+
+
 async def get_update_message(business_connection_id, from_user_id):
     cursor = await db_connection.execute('''
         SELECT text, is_edited, is_deleted, date, file_id, type_message, message_id, chat_id
@@ -233,15 +306,15 @@ async def get_update_message(business_connection_id, from_user_id):
     return row
 
 
-async def get_user_stats(business_connection_id, from_user_id):
+async def get_user_stats(owner_id, from_user_id):
     cursor = await db_connection.execute('''
         SELECT
             COUNT(*) AS total,
             SUM(is_deleted) AS deleted,
             SUM(is_edited) AS edited
         FROM messages
-        WHERE business_connection_id = ? AND from_user_id = ?
-    ''', (business_connection_id, from_user_id))
+        WHERE owner_id = ? AND from_user_id = ?
+    ''', (owner_id, from_user_id))
     row = await cursor.fetchone()
     return row
 
@@ -350,7 +423,7 @@ async def get_bookmarks(owner_id):
 
 # ----------------------------- contacts & stats -----------------------------
 
-async def get_contacts_with_counts(business_connection_id, owner_id=None):
+async def get_contacts_with_counts(owner_id):
     """List of contacts with counts of edited/deleted messages, excluding the owner."""
     cursor = await db_connection.execute('''
         SELECT from_user_id,
@@ -360,51 +433,53 @@ async def get_contacts_with_counts(business_connection_id, owner_id=None):
                SUM(is_edited) AS edited,
                SUM(is_deleted) AS deleted
         FROM messages
-        WHERE business_connection_id = ? AND from_user_id != ?
+        WHERE owner_id = ? AND from_user_id != ?
         GROUP BY from_user_id
         ORDER BY (SUM(is_edited) + SUM(is_deleted)) DESC
-    ''', (business_connection_id, owner_id if owner_id is not None else -1))
+    ''', (owner_id, owner_id))
     return await cursor.fetchall()
 
 
-async def get_top_deleters(business_connection_id, limit=5):
+async def get_top_deleters(owner_id, limit=5):
     cursor = await db_connection.execute('''
         SELECT MAX(username), MAX(first_name), from_user_id, SUM(is_deleted) AS deleted
-        FROM messages WHERE business_connection_id = ?
+        FROM messages WHERE owner_id = ?
         GROUP BY from_user_id HAVING deleted > 0
         ORDER BY deleted DESC LIMIT ?
-    ''', (business_connection_id, limit))
+    ''', (owner_id, limit))
     return await cursor.fetchall()
 
 
-async def get_top_editors(business_connection_id, limit=5):
+async def get_top_editors(owner_id, limit=5):
     cursor = await db_connection.execute('''
         SELECT MAX(username), MAX(first_name), from_user_id, SUM(is_edited) AS edited
-        FROM messages WHERE business_connection_id = ?
+        FROM messages WHERE owner_id = ?
         GROUP BY from_user_id HAVING edited > 0
         ORDER BY edited DESC LIMIT ?
-    ''', (business_connection_id, limit))
+    ''', (owner_id, limit))
     return await cursor.fetchall()
 
 
-async def get_deletion_hours(business_connection_id):
-    """Returns rows of (hour, count) for deleted messages, by edit timestamp."""
+async def get_deletion_hours(owner_id):
+    """Rows of (hour, count) for deleted messages, by deletion timestamp (MSK)."""
     cursor = await db_connection.execute('''
-        SELECT CAST(strftime('%H', datetime(edited_at, 'unixepoch')) AS INTEGER) AS hour,
+        SELECT CAST(strftime('%H', datetime(deleted_at, 'unixepoch', '+3 hours')) AS INTEGER) AS hour,
                COUNT(*) AS cnt
-        FROM message_edits GROUP BY hour ORDER BY cnt DESC
-    ''')
+        FROM messages
+        WHERE owner_id = ? AND is_deleted = 1 AND deleted_at IS NOT NULL
+        GROUP BY hour ORDER BY cnt DESC
+    ''', (owner_id,))
     return await cursor.fetchall()
 
 
-async def get_filtered_messages(business_connection_id, from_user_id, mode='all', query=None):
+async def get_filtered_messages(owner_id, from_user_id, mode='all', query=None):
     """mode: 'all' | 'deleted' | 'edited'. query: optional substring search."""
     sql = '''
         SELECT id, text, is_edited, is_deleted, date, file_id, type_message, message_id, chat_id, local_path
         FROM messages
-        WHERE business_connection_id = ? AND from_user_id = ?
+        WHERE owner_id = ? AND from_user_id = ?
     '''
-    params = [business_connection_id, from_user_id]
+    params = [owner_id, from_user_id]
     if mode == 'deleted':
         sql += ' AND is_deleted = 1'
     elif mode == 'edited':
@@ -453,27 +528,52 @@ async def get_owners_with_pending():
 
 # ----------------------------- maintenance -----------------------------
 
-async def enforce_user_limit(business_connection_id, from_user_id, limit=1000):
-    """Keep only the newest `limit` messages per user; drop the oldest."""
-    await db_connection.execute('''
-        DELETE FROM messages
-        WHERE id IN (
-            SELECT id FROM messages
-            WHERE business_connection_id = ? AND from_user_id = ?
-            ORDER BY date DESC
-            LIMIT -1 OFFSET ?
+async def enforce_user_limit(owner_id, from_user_id, limit=1000):
+    """Keep only the newest `limit` messages per user; drop the oldest.
+
+    Returns the local media paths of the dropped rows so the caller can delete
+    the files from disk.
+    """
+    cursor = await db_connection.execute('''
+        SELECT id, local_path FROM messages
+        WHERE owner_id = ? AND from_user_id = ?
+        ORDER BY date DESC
+        LIMIT -1 OFFSET ?
+    ''', (owner_id, from_user_id, limit))
+    rows = await cursor.fetchall()
+    ids = [r[0] for r in rows]
+    paths = [r[1] for r in rows if r[1]]
+    if ids:
+        await db_connection.executemany(
+            'DELETE FROM messages WHERE id = ?', [(i,) for i in ids]
         )
-    ''', (business_connection_id, from_user_id, limit))
     await db_connection.commit()
+    return paths
 
 
 async def purge_old_messages(days=30):
-    """Delete messages older than `days` (by stored date timestamp)."""
+    """Delete messages older than `days` (by stored date timestamp).
+
+    Also removes orphaned edit history and bookmarks. Returns local media paths
+    so the caller can delete the files from disk.
+    """
     cutoff = int(datetime.now(tz=timezone.utc).timestamp()) - days * 86400
+    cursor = await db_connection.execute(
+        'SELECT chat_id, message_id, local_path FROM messages WHERE date < ?', (cutoff,)
+    )
+    rows = await cursor.fetchall()
+    paths = [r[2] for r in rows if r[2]]
+    for chat_id, message_id, _ in rows:
+        await db_connection.execute(
+            'DELETE FROM message_edits WHERE chat_id = ? AND message_id = ?',
+            (chat_id, message_id)
+        )
+    await db_connection.execute('DELETE FROM messages WHERE date < ?', (cutoff,))
     await db_connection.execute(
-        'DELETE FROM messages WHERE date < ?', (cutoff,)
+        'DELETE FROM bookmarks WHERE message_db_id NOT IN (SELECT id FROM messages)'
     )
     await db_connection.commit()
+    return paths
 
 
 async def vacuum():
@@ -592,19 +692,93 @@ async def grant_referral_bonus(referrer_id, referred_id, bonus_days=7):
 
 
 async def get_all_owners():
-    """Return all business connection owners with best-effort username lookup."""
+    """Return all known owners (from the owners table) ordered by id."""
+    cursor = await db_connection.execute(
+        'SELECT owner_id, username, first_name, connected_at, last_seen '
+        'FROM owners ORDER BY owner_id'
+    )
+    return await cursor.fetchall()
+
+
+async def get_admin_stats():
+    """Detailed per-owner stats for the admin panel."""
+    owners = await get_all_owners()
+    conns = await get_connections_map()
+    result = []
+    for owner_id, username, first_name, connected_at, last_seen in owners:
+        owner_id = int(owner_id)
+        sub = await get_subscription(owner_id)
+        bcid = conns.get(owner_id)
+        agg = await _owner_message_aggregate(bcid)
+        refs = await get_referral_count(owner_id)
+        result.append({
+            'owner_id': owner_id,
+            'username': username,
+            'first_name': first_name,
+            'connected': bcid is not None,
+            'last_seen': last_seen,
+            'subscription': sub,
+            'contacts': agg['contacts'],
+            'total': agg['total'],
+            'edited': agg['edited'],
+            'deleted': agg['deleted'],
+            'referrals': refs,
+        })
+    return result
+
+
+async def _owner_message_aggregate(business_connection_id):
+    if not business_connection_id:
+        return {'contacts': 0, 'total': 0, 'edited': 0, 'deleted': 0}
     cursor = await db_connection.execute('''
-        SELECT
-            c.owner_id,
-            (SELECT m.username FROM messages m
-             WHERE CAST(m.from_user_id AS TEXT) = c.owner_id AND m.username IS NOT NULL
-             LIMIT 1) AS username,
-            (SELECT m.first_name FROM messages m
-             WHERE CAST(m.from_user_id AS TEXT) = c.owner_id AND m.first_name IS NOT NULL
-             LIMIT 1) AS first_name
-        FROM connections c
-        ORDER BY c.owner_id
-    ''')
+        SELECT COUNT(DISTINCT from_user_id), COUNT(*),
+               COALESCE(SUM(is_edited), 0), COALESCE(SUM(is_deleted), 0)
+        FROM messages WHERE business_connection_id = ?
+    ''', (business_connection_id,))
+    row = await cursor.fetchone()
+    contacts, total, edited, deleted = row if row else (0, 0, 0, 0)
+    return {
+        'contacts': contacts or 0,
+        'total': total or 0,
+        'edited': edited or 0,
+        'deleted': deleted or 0,
+    }
+
+
+async def reset_unlimited_subscriptions():
+    """Deactivate test subscriptions that have no expiry (expires_at IS NULL).
+
+    Trial/paid subscriptions keep their expiry and lapse on their own.
+    """
+    await db_connection.execute(
+        'UPDATE subscriptions SET is_active = 0 WHERE is_active = 1 AND expires_at IS NULL'
+    )
+    await db_connection.commit()
+
+
+# ----------------------------- yoo payments -----------------------------
+
+async def save_payment(payment_id, user_id, status):
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    await db_connection.execute('''
+        INSERT INTO yoo_payments (payment_id, user_id, status, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(payment_id) DO UPDATE SET status = excluded.status
+    ''', (payment_id, int(user_id), status, now))
+    await db_connection.commit()
+
+
+async def set_payment_status(payment_id, status):
+    await db_connection.execute(
+        'UPDATE yoo_payments SET status = ? WHERE payment_id = ?', (status, payment_id)
+    )
+    await db_connection.commit()
+
+
+async def get_pending_payments():
+    cursor = await db_connection.execute(
+        "SELECT payment_id, user_id FROM yoo_payments WHERE status = 'pending'"
+    )
     return await cursor.fetchall()
 
 

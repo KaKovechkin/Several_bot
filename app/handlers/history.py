@@ -40,7 +40,7 @@ async def send_contact_list(message: Message):
     if connection is None:
         await message.answer(t(lang, 'no_connection'))
         return
-    contacts = await get_contacts_with_counts(connection[0], owner_id)
+    contacts = await get_contacts_with_counts(owner_id)
     if not contacts:
         await message.answer('Пока нет сохранённых собеседников.')
         return
@@ -93,10 +93,9 @@ async def _render_history(bot: Bot, owner_id: int, user_id: int, mode: str,
         m = await target.answer(t(lang, 'no_connection'))
         state.track(owner_id, [m.message_id])
         return
-    bcid = conn[0]
     premium = await is_premium(owner_id)
 
-    messages = await get_filtered_messages(bcid, user_id, mode=mode)
+    messages = await get_filtered_messages(owner_id, user_id, mode=mode)
 
     # Free tier: limit to last N days
     if not premium:
@@ -195,7 +194,7 @@ async def on_user_selected(callback: CallbackQuery, callback_data: UserID, bot: 
         if conn is None:
             await callback.answer('Нет активного бизнес-соединения.', show_alert=True)
             return
-        stats = await get_user_stats(conn[0], user_id)
+        stats = await get_user_stats(owner_id, user_id)
         total, deleted, edited = stats if stats else (0, 0, 0)
         await callback.message.answer(
             f'📊 Статистика собеседника:\n'

@@ -48,10 +48,9 @@ def support_kb(username: str, lang: str = 'ru') -> InlineKeyboardMarkup:
 
 
 def buy_kb(lang: str = 'ru') -> InlineKeyboardMarkup:
-    # Кнопка «Купить подписку». В тестовом режиме оплаты нет — нажатие
-    # активирует Premium бесплатно (см. cb_buy).
+    # Кнопка «Оформить подписку» — открывает тарифы (YooKassa 500 ₽/год + триал).
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t(lang, 'btn_buy'), callback_data='buy_premium')],
+        [InlineKeyboardButton(text=t(lang, 'btn_subscribe'), callback_data='open_subscribe')],
         [back_btn(lang)],
     ])
 
@@ -94,6 +93,7 @@ def settings_kb(settings: dict) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text='🔑 Ключевые слова', callback_data='set:keywords')
     b.button(text=f'🔕 Тихий режим: {quiet}', callback_data='set:quiet')
+    b.button(text='🕐 Часы тихого режима', callback_data='set:qhours')
     b.button(text=f'🌐 Язык: {lang.upper()}', callback_data='set:lang')
     b.button(text='🧹 Очистить чат', callback_data='set:clearchat')
     b.button(text='🗑 Удалить мою историю', callback_data='set:wipe')
