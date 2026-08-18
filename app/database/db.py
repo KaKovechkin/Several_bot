@@ -167,6 +167,22 @@ async def init_db():
     sub_cols = [r[1] for r in await cursor.fetchall()]
     if 'trial_used' not in sub_cols:
         await db_connection.execute("ALTER TABLE subscriptions ADD COLUMN trial_used INTEGER DEFAULT 0")
+    # One-time deploy step: deactivate unlimited test subscriptions (granted
+    # during test mode, expires_at IS NULL — they would never lapse on their
+    # own). Runs once, marked in app_meta so it is not repeated.
+    await db_connection.execute(
+        "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)"
+    )
+    cursor = await db_connection.execute(
+        "SELECT value FROM app_meta WHERE key = 'subs_reset_done'"
+    )
+    if await cursor.fetchone() is None:
+        await reset_unlimited_subscriptions()
+        now = int(datetime.now(tz=timezone.utc).timestamp())
+        await db_connection.execute(
+            "INSERT INTO app_meta (key, value) VALUES ('subs_reset_done', ?)",
+            (str(now),),
+        )
     await db_connection.commit()
 
 
